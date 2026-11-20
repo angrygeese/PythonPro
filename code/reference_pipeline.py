@@ -18,140 +18,315 @@ from rdkit.Chem import (
     rdFingerprintGenerator,
     rdMolDescriptors,
 )
+from rdkit.Chem.rdchem import Mol
 from rdkit.DataStructs.cDataStructs import BulkTanimotoSimilarity
 from rdkit.ML.Cluster import Butina
 from tmap import TMAP
-from types import SimpleNamespace
+from types import SimpleNamespace  # используется вместо словарей,
+                                   # т. к. позволяет использовать точечную
+                                   # нотацию для получения значения
+                                   # (SimpleNamespace.attr эквивалетно dict["key"])
 
-INPUT_FILE_PATH = os.path.join("..", "data_folder", "tables", "molecules.csv")
-
-OUTPUT_DIR = os.path.join("..", "data_folder", "processed_data")
-OUTPUT_FILE_NAME = SimpleNamespace(
-    valid="molecules_processed_valid.csv",
-    invalid="molecules_processed_invalid.csv"
-)
-OUTPUT_FILE_PATH = SimpleNamespace(
-    valid=os.path.join(OUTPUT_DIR, OUTPUT_FILE_NAME.valid),
-    invalid=os.path.join(OUTPUT_DIR, OUTPUT_FILE_NAME.invalid)
-)
-
-
-MOL_ID = SimpleNamespace(name="mol_id", set_value=lambda mol_id: mol_id)
-SMILES = SimpleNamespace(name="smiles", set_value=lambda smiles: smiles)
-MOL = SimpleNamespace(name="mol", set_value=lambda data: MolFromSmiles(data[SMILES.name]))
-MOL_WEIGHT = SimpleNamespace(name="MW", set_value=lambda data: Descriptors.MolWt(data[MOL.name]))
-LOG_P = SimpleNamespace(name="LogP", set_value=lambda data: Descriptors.MolLogP(data[MOL.name]))
-TPSA = SimpleNamespace(name="TPSA", set_value=lambda data: Descriptors.TPSA(data[MOL.name]))
-HBD = SimpleNamespace(name="HBD", set_value=lambda data: Descriptors.NumHDonors(data[MOL.name]))
-HBA = SimpleNamespace(name="HBA", set_value=lambda data: Descriptors.NumHAcceptors(data[MOL.name]))
-ROT_BONDS = SimpleNamespace(
-    name="RotBonds",
-    set_value=lambda data: Descriptors.NumRotatableBonds(data[MOL.name])
-)
-RINGS = SimpleNamespace(name="Rings", set_value=lambda data: Descriptors.RingCount(data[MOL.name]))
-QED = SimpleNamespace(name="QED", set_value=lambda data: Descriptors.qed(data[MOL.name]))
-RO5_PASS = SimpleNamespace(
-    name="Ro5_pass",
-    thresholds={
-        MOL_WEIGHT.name: SimpleNamespace(value=500, sign=operator.le),
-        LOG_P.name: SimpleNamespace(value=5, sign=operator.le),
-        HBD.name: SimpleNamespace(value=5, sign=operator.le),
-        HBA.name: SimpleNamespace(value=10, sign=operator.le)
-    },
-    set_value=lambda thresholds, data: all(
-        [field_name.sign(data[field_name], field_name.value) for field_name in thresholds]
+REQUIRED_FIELDS = SimpleNamespace(
+    MOL_ID=SimpleNamespace(
+        name="mol_id"
+    ),
+    SMILES=SimpleNamespace(
+        name="smiles"
     )
 )
 
-mw_list = []
-logp_list = []
-tpsa_list = []
-hbd_list = []
-hba_list = []
-rotbonds_list = []
-rings_list = []
-qed_list = []
-valid_list = []
-
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-with open(INPUT_FILE_PATH, newline="", encoding="utf-8") as fh:
-    rows = list(csv.DictReader(fh))
-# process all molecules fast, don't touch
-mols = [MOL.set_value(r) for r in rows]
-for r in rows:
-    mol = MOL.set_value(r)
-    print("ok")
-    if mol is not None:
-        r[MOL.name] = mol
-        mw_list.append(MOL_WEIGHT.set_value(r))
-        logp_list.append(LOG_P.set_value(r))
-        tpsa_list.append(TPSA.set_value(r))
-        hbd_list.append(HBD.set_value(r))
-        hba_list.append(HBA.set_value(r))
-        rotbonds_list.append(ROT_BONDS.set_value(r))
-        rings_list.append(RINGS.set_value(r))
-        qed_list.append(QED.set_value(r))
-        valid_list.append(True)
-    else:
-        mw_list.append(None)
-        logp_list.append(None)
-        tpsa_list.append(None)
-        hbd_list.append(None)
-        hba_list.append(None)
-        rotbonds_list.append(None)
-        rings_list.append(None)
-        qed_list.append(None)
-        valid_list.append(False)
-
-for i, r in enumerate(rows):
-    r["valid"] = valid_list[i]
-    r["MW"] = mw_list[i]
-    r['LogP'] = logp_list[i]
-    r['TPSA'] = tpsa_list[i]
-    r["HBD"] = hbd_list[i]
-    r["HBA"] = hba_list[i]
-    r["RotBonds"] = rotbonds_list[i]
-    r["Rings"] = rings_list[i]
-    r["QED"] = qed_list[i]
-    r["Ro5_pass"] = (r["MW"] <= 500) and (r["LogP"] <= 5) and (r["HBD"] <= 5) and (r["HBA"] <= 10)
-# print statistics
-print(f"Valid molecules: {sum(valid_list)} / {len(rows)}")
-print(f"Ro5 pass: {sum(r['Ro5_pass'] for r in rows)} / {len(rows)}")
-print(f"MW range: {min(mw_list):.1f} — {max(mw_list):.1f}")
-for r in rows[:10]:
-    print(r["mol_id"], r["MW"], r["LogP"], r["TPSA"], r["QED"], r["Ro5_pass"])
-gen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=4096)
-fps = [gen.GetFingerprint(m) for m in mols]
-distances = []
-for i in range(1, len(fps)):
-    sims = BulkTanimotoSimilarity(fps[i], fps[:i])
-    distances.extend([1 - s for s in sims])
-clusters = Butina.ClusterData(distances, len(fps), 0.7, isDistData=True)
-for r in rows:
-    r['cluster'] = -1
-for cluster_id, members in enumerate(clusters):
-    for idx in members:
-        rows[idx]['cluster'] = cluster_id
-X = np.array([list(fp) for fp in fps], dtype=np.uint8)
-x, y, s, t = TMAP(metric="jaccard", n_neighbors=10).fit_transform(X)
-for r, xi, yi in zip(rows, x, y):
-    r["x"] = xi
-    r["y"] = yi
-with open(OUTPUT_FILE_PATH.valid, "w", newline="", encoding="utf-8") as fh:
-    writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
-    writer.writeheader()
-    writer.writerows(rows)
-labels = [f"{r['smiles']}__{r['mol_id']}" for r in rows]
-# use Faerun
-f = Faerun(view="front", coords=False, clear_color="#FFFFFF")
-f.add_scatter(
-    "molecules", { "x": x, "y": y, "c": [[r["cluster"] for r in rows], [r["LogP"] for r in rows], [r["MW"] for r in rows]], "labels": labels},
-    shader="smoothCircle", point_scale=10, colormap=["tab20", "viridis", "plasma"], categorical=[True, False, False],
-    series_title=["Cluster", "LogP", "MolWt"], has_legend=True, legend_title=["Cluster", "LogP", "MolWt"]
+CALCULATED_FIELDS = SimpleNamespace(
+    FINGERPRINT=SimpleNamespace(
+        name="fingerprint",
+        calculate_value=(rdFingerprintGenerator.GetMorganGenerator(
+            radius=2,
+            fpSize=4096
+        ).GetFingerprint)
+    ),
+    MOL_WEIGHT=SimpleNamespace(
+        name="MW",
+        calculate_value=Descriptors.MolWt
+    ),
+    LOG_P=SimpleNamespace(
+        name="LogP",
+        calculate_value=Descriptors.MolLogP
+    ),
+    TPSA = SimpleNamespace(
+        name="TPSA",
+        calculate_value=Descriptors.TPSA
+    ),
+    HBD = SimpleNamespace(
+        name="HBD",
+        calculate_value=Descriptors.NumHDonors
+    ),
+    HBA = SimpleNamespace(
+        name="HBA",
+        calculate_value=Descriptors.NumHAcceptors
+    ),
+    ROT_BONDS = SimpleNamespace(
+        name="RotBonds",
+        calculate_value=Descriptors.NumRotatableBonds
+    ),
+    RINGS = SimpleNamespace(
+        name="Rings",
+        calculate_value=Descriptors.RingCount
+    ),
+    QED = SimpleNamespace(
+        name="QED",
+        calculate_value=Descriptors.qed
+    ),
+    RO5_PASS = SimpleNamespace(
+        name="Ro5_pass",
+        thresholds=None,
+        calculate_value=None
+    ),
+    CLUSTER = SimpleNamespace(
+        name="cluster",
+        calculate_value=(lambda value: None if isinstance(value, Mol) else value)
+    ),
+    X = SimpleNamespace(
+        name="x",
+        calculate_value=(lambda value: None if isinstance(value, Mol) else value)
+    ),
+    Y = SimpleNamespace(
+        name="y",
+        calculate_value=(lambda value: None if isinstance(value, Mol) else value)
+    )
 )
-f.add_tree(
-    "molecules_tree", {"from": s, "to": t}, point_helper="molecules", color="#222222",
+
+
+CALCULATED_FIELDS.RO5_PASS.thresholds = (
+    SimpleNamespace(
+        field=CALCULATED_FIELDS.MOL_WEIGHT,
+        value=500,
+        sign=operator.le
+    ),
+    SimpleNamespace(
+        field=CALCULATED_FIELDS.LOG_P,
+        value=5,
+        sign=operator.le
+    ),
+    SimpleNamespace(
+        field=CALCULATED_FIELDS.HBD,
+        value=5,
+        sign=operator.le
+    ),
+    SimpleNamespace(
+        field=CALCULATED_FIELDS.HBA,
+        value=10,
+        sign=operator.le
+    )
 )
-f.plot("molecules", path=OUTPUT_DIR, template="smiles")
-# check the values in the browser
+
+CALCULATED_FIELDS.RO5_PASS.calculate_value = lambda molecule: all(
+    [
+        threshold.sign(
+            threshold.field.calculate_value(molecule), threshold.value
+        ) for threshold in CALCULATED_FIELDS.RO5_PASS.thresholds
+    ]
+)
+
+INPUT = SimpleNamespace(
+    directory=SimpleNamespace(
+        name=os.path.join("..", "data_folder", "tables")
+    ),
+    file=SimpleNamespace(
+        name="molecules.csv",
+        fields=(
+            REQUIRED_FIELDS.MOL_ID,
+            REQUIRED_FIELDS.SMILES
+        ),
+    )
+)
+
+OUTPUT = SimpleNamespace(
+    statistics=SimpleNamespace(
+        length=10,
+        fields=(
+            REQUIRED_FIELDS.MOL_ID,
+            CALCULATED_FIELDS.MOL_WEIGHT,
+            CALCULATED_FIELDS.LOG_P,
+            CALCULATED_FIELDS.TPSA,
+            CALCULATED_FIELDS.QED,
+            CALCULATED_FIELDS.RO5_PASS
+        )
+    ),
+    plot=SimpleNamespace(
+        name="molecules",
+        fields=(
+            CALCULATED_FIELDS.CLUSTER,
+            CALCULATED_FIELDS.LOG_P,
+            CALCULATED_FIELDS.MOL_WEIGHT
+        )
+    ),
+    directory=SimpleNamespace(
+        name=os.path.join("..", "data_folder", "processed_data")
+    ),
+    file=SimpleNamespace(
+        name = SimpleNamespace(
+            valid="molecules_processed_valid.csv",
+            invalid="molecules_processed_invalid.csv"
+        ),
+        fields=(
+            REQUIRED_FIELDS.MOL_ID,
+            REQUIRED_FIELDS.SMILES,
+            CALCULATED_FIELDS.MOL_WEIGHT,
+            CALCULATED_FIELDS.LOG_P,
+            CALCULATED_FIELDS.TPSA,
+            CALCULATED_FIELDS.HBD,
+            CALCULATED_FIELDS.HBA,
+            CALCULATED_FIELDS.ROT_BONDS,
+            CALCULATED_FIELDS.RINGS,
+            CALCULATED_FIELDS.QED,
+            CALCULATED_FIELDS.RO5_PASS
+        )
+    ),
+)
+
+def update_table(input_file_path: str) -> tuple[list[dict], list[dict]]:
+    with open(input_file_path, newline="", encoding="utf-8") as input_file:
+        header = input_file.readline().rstrip().split(",")
+        molecules_valid, molecules_invalid = [], []
+        for line in input_file:
+            row_values = dict(zip(header, line.rstrip().split(",")))
+            molecule = MolFromSmiles(row_values[REQUIRED_FIELDS.SMILES.name])
+            calculated_fields = vars(CALCULATED_FIELDS).values()
+            if molecule:
+                for field in calculated_fields:
+                    row_values.update(
+                        {field.name: field.calculate_value(molecule)}
+                    )
+                molecules_valid.append(row_values)
+            else:
+                molecules_invalid.append(row_values)
+    return molecules_valid, molecules_invalid
+
+def print_statistics(molecules_valid: list, molecules_invalid: list) -> None:
+    """Prints some statistical info."""
+    total_count = len(molecules_valid) + len(molecules_invalid)
+    print(f"Valid molecules: {len(molecules_valid)} / {total_count}")
+    print(f"Ro5 passed: {sum(molecule[CALCULATED_FIELDS.RO5_PASS.name] for molecule in molecules_valid)} / {total_count}")
+    molecular_weights = [molecule[CALCULATED_FIELDS.MOL_WEIGHT.name] for molecule in molecules_valid]
+    print(f"Molecular weights range: {min(molecular_weights):.1f} — {max(molecular_weights):.1f}")
+    print()
+    print(*[field.name for field in OUTPUT.statistics.fields], sep="\t")
+    for molecule in molecules_valid[:OUTPUT.statistics.length]:
+        print(*[molecule[field.name] for field in OUTPUT.statistics.fields], sep="\t")
+    print()
+
+def clusterize(molecules_valid: list[dict]) -> None:
+    fingerprints = [
+        molecule[CALCULATED_FIELDS.FINGERPRINT.name] for molecule in molecules_valid
+    ]
+    distances = []
+    for index in range(1, len(fingerprints)):
+        similarity_scores = BulkTanimotoSimilarity(
+            fingerprints[index],
+            fingerprints[:index]
+        )
+        distances.extend([
+            1 - similarity_score for similarity_score in similarity_scores
+        ])
+    clusters = Butina.ClusterData(
+        distances,
+        len(fingerprints),
+        0.7,
+        isDistData=True
+    )
+    for cluster_id, members in enumerate(clusters):
+        for index in members:
+            molecules_valid[index][CALCULATED_FIELDS.CLUSTER.name] = cluster_id
+
+def plot_graph(
+        molecules_valid: list[dict],
+        output_dir: str = OUTPUT.directory.name,
+        plot_name: str = OUTPUT.plot.name
+) -> None:
+    """Creates layout and draws a graph using Faerun library."""
+    fingerprints = np.array(
+        [
+            list(molecule[CALCULATED_FIELDS.FINGERPRINT.name]) for molecule in molecules_valid
+        ], dtype=np.uint8
+    )
+    x, y, s, t = TMAP(metric="jaccard", n_neighbors=10).fit_transform(fingerprints)
+    for molecule, xi, yi in zip(molecules_valid, x, y):
+        molecule[CALCULATED_FIELDS.X.name] = xi
+        molecule[CALCULATED_FIELDS.Y.name] = yi
+
+    f = Faerun(view="front", coords=False, clear_color="#FFFFFF")
+    
+    plot_fields_names = [field.name for field in OUTPUT.plot.fields]
+    required_fields_names = [
+        field.name for field in vars(REQUIRED_FIELDS).values()
+    ]
+    f.add_scatter(
+        name=plot_name, 
+        data={
+            "x": x,
+            "y": y,
+            "c": [
+                [row[field_name] for row in molecules_valid] for field_name in plot_fields_names
+            ], 
+            "labels": [
+                f"{'__'.join([row[field_name] for field_name in required_fields_names[::-1]])}" for row in molecules_valid
+            ]
+        },
+        shader="smoothCircle",
+        point_scale=10, colormap=["tab20", "viridis", "plasma"],
+        categorical=[True, False, False],
+        series_title=plot_fields_names,
+        has_legend=True,
+        legend_title=plot_fields_names
+    )
+    f.add_tree(
+        name=f"{plot_name}_tree",
+        data={"from": s, "to": t},
+        point_helper=plot_name,
+        color="#222222",
+    )
+    f.plot(plot_name, path=output_dir, template=REQUIRED_FIELDS.SMILES.name)
+
+def filter_output_fields(molecules: list[dict]) -> list[dict]:
+    """Filters record info only to required fields."""
+    return [
+        {field.name: molecule[field.name] for field in OUTPUT.file.fields}
+        for molecule in molecules
+    ]
+
+def save(
+        values: list[dict],
+        file_path: str
+) -> None:
+    """Saves data to a specified file."""
+    with open(file_path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(
+            fh,
+            fieldnames=[field.name for field in OUTPUT.file.fields]
+        )
+        writer.writeheader()
+        writer.writerows(values)
+        print(f"{file_path}\tsaved")
+
+def run() -> None:
+    """Orchestrates the pipeline."""
+    input_path = os.path.join(INPUT.directory.name, INPUT.file.name)
+    output_path_valid = os.path.join(OUTPUT.directory.name, OUTPUT.file.name.valid)
+    output_path_invalid = os.path.join(OUTPUT.directory.name, OUTPUT.file.name.invalid)
+
+    molecules_valid, molecules_invalid = update_table(input_path)
+    if any([molecules_valid, molecules_invalid]):
+        os.makedirs(OUTPUT.directory.name, exist_ok=True)
+        if molecules_valid:
+            print_statistics(molecules_valid, molecules_invalid)
+            clusterize(molecules_valid)
+            plot_graph(molecules_valid)
+            molecules_valid_filtered = filter_output_fields(molecules_valid)
+            molecules_invalid_filtered = filter_output_fields(molecules_invalid)
+            save(molecules_valid_filtered, output_path_valid)
+        if molecules_invalid:
+            save(molecules_invalid_filtered, output_path_invalid)
+
+
+if __name__ == "__main__":
+    run()
