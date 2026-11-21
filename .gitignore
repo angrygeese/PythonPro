@@ -1,3 +1,4 @@
 .venv
 venv
-processed_data
+data_folder/processed_data/*
+!.gitkeep
