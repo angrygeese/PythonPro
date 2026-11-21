@@ -1,7 +1,8 @@
-"""Пайплайн для процессинга молекул.
+"""
+Pipeline for molecule processing.
 
-Читает молекулы из файла, считает дескрипторы и фингерпринты,
-делает кластеризацию и визуализирует результаты.
+Identifies molecules using SMILES notation, computes specified proterties 
+into fields of the table, performs clasterization and plots the result.
 """
 
 import csv
@@ -25,7 +26,7 @@ from tmap import TMAP
 from types import SimpleNamespace  # используется вместо словарей,
                                    # т. к. позволяет использовать точечную
                                    # нотацию для получения значения
-                                   # (SimpleNamespace.attr эквивалетно dict["key"])
+                                   # (SimpleNamespace.attr вместо dict["key"])
 
 REQUIRED_FIELDS = SimpleNamespace(
     MOL_ID=SimpleNamespace(
@@ -184,26 +185,39 @@ OUTPUT = SimpleNamespace(
     ),
 )
 
+def check_header(header: list[str]) -> bool:
+    required_fields = [field.name for field in vars(REQUIRED_FIELDS).values()]
+    return set(required_fields).issubset(set(header))
+
 def update_table(input_file_path: str) -> tuple[list[dict], list[dict]]:
+    """
+    Computes the specified properties for each molecule from source table
+    and stores results into dictionary.
+    """
     with open(input_file_path, newline="", encoding="utf-8") as input_file:
         header = input_file.readline().rstrip().split(",")
-        molecules_valid, molecules_invalid = [], []
-        for line in input_file:
-            row_values = dict(zip(header, line.rstrip().split(",")))
-            molecule = MolFromSmiles(row_values[REQUIRED_FIELDS.SMILES.name])
-            calculated_fields = vars(CALCULATED_FIELDS).values()
-            if molecule:
-                for field in calculated_fields:
-                    row_values.update(
-                        {field.name: field.calculate_value(molecule)}
-                    )
-                molecules_valid.append(row_values)
-            else:
-                molecules_invalid.append(row_values)
+        if check_header(header):
+            molecules_valid, molecules_invalid = [], []
+            for line in input_file:
+                row_values = dict(zip(header, line.rstrip().split(",")))
+                molecule = MolFromSmiles(row_values[REQUIRED_FIELDS.SMILES.name])
+                calculated_fields = vars(CALCULATED_FIELDS).values()
+                if molecule:
+                    for field in calculated_fields:
+                        row_values.update(
+                            {field.name: field.calculate_value(molecule)}
+                        )
+                    molecules_valid.append(row_values)
+                else:
+                    molecules_invalid.append(row_values)
+        else:
+            raise KeyError("Error reading source table: invalid header.")
     return molecules_valid, molecules_invalid
 
 def print_statistics(molecules_valid: list, molecules_invalid: list) -> None:
-    """Prints some statistical info."""
+    """
+    Prints some statistical info.
+    """
     total_count = len(molecules_valid) + len(molecules_invalid)
     print(f"Valid molecules: {len(molecules_valid)} / {total_count}")
     print(f"Ro5 passed: {sum(molecule[CALCULATED_FIELDS.RO5_PASS.name] for molecule in molecules_valid)} / {total_count}")
@@ -216,6 +230,9 @@ def print_statistics(molecules_valid: list, molecules_invalid: list) -> None:
     print()
 
 def clusterize(molecules_valid: list[dict]) -> None:
+    """
+    Performs clasterization.
+    """
     fingerprints = [
         molecule[CALCULATED_FIELDS.FINGERPRINT.name] for molecule in molecules_valid
     ]
@@ -243,7 +260,9 @@ def plot_graph(
         output_dir: str = OUTPUT.directory.name,
         plot_name: str = OUTPUT.plot.name
 ) -> None:
-    """Creates layout and draws a graph using Faerun library."""
+    """
+    Creates layout and draws a graph using Faerun library.
+    """
     fingerprints = np.array(
         [
             list(molecule[CALCULATED_FIELDS.FINGERPRINT.name]) for molecule in molecules_valid
@@ -288,7 +307,9 @@ def plot_graph(
     f.plot(plot_name, path=output_dir, template=REQUIRED_FIELDS.SMILES.name)
 
 def filter_output_fields(molecules: list[dict]) -> list[dict]:
-    """Filters record info only to required fields."""
+    """
+    Filters record info only to required fields.
+    """
     return [
         {field.name: molecule[field.name] for field in OUTPUT.file.fields}
         for molecule in molecules
@@ -298,7 +319,9 @@ def save(
         values: list[dict],
         file_path: str
 ) -> None:
-    """Saves data to a specified file."""
+    """
+    Saves data to a specified file.
+    """
     with open(file_path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(
             fh,
@@ -309,7 +332,9 @@ def save(
         print(f"{file_path}\tsaved")
 
 def run() -> None:
-    """Orchestrates the pipeline."""
+    """
+    Orchestrates the pipeline.
+    """
     input_path = os.path.join(INPUT.directory.name, INPUT.file.name)
     output_path_valid = os.path.join(OUTPUT.directory.name, OUTPUT.file.name.valid)
     output_path_invalid = os.path.join(OUTPUT.directory.name, OUTPUT.file.name.invalid)
